@@ -3,7 +3,17 @@ const { MongoClient, ObjectId } = require("mongodb"); //Access the mongodb, obje
 const multer = require("multer") //for users to send us files
 const upload = multer()
 const sanitizeHTML = require('sanitize-html') //cleans up string 
+const fse = require('fs-extra') //dealing with files
+const sharp = require('sharp') //file manuiplation 
 let db;
+const path = require('path')
+const React = require("react")
+const ReactDOMServer= require('react-dom/server')
+const AnimalCard = require("./src/components/AnimalCard").default
+
+//when app first laucnhes make sure public/uploaded-photos exist
+fse.ensureDirSync(path.join("public", "uploaded-photos"))
+
 
 //creates an instance of app
 const app = express();
@@ -20,8 +30,8 @@ app.use(express.urlencoded({extended: false}))
 //our own middleware
 //run this function before req and res for other routes
 function passwordProtected(req, res, next) {
-  res.set("WWW-Authenticate", "Basic realm='Our MERN App'")
-  if(req.headers.authorization == "Basic YWRtaW46cGFzc3dvcmQ="){
+  res.set("WWW-Authenticate", "Basic realm='Our MERN App'") 
+  if(req.headers.authorization == "Basic YWRtaW46cGFzc3dvcmQ="){ //basic username/password login authorization before being able to access any pages beside home page
     next()
   } else {
     console.log(req.headers.authorization)
@@ -36,7 +46,16 @@ function passwordProtected(req, res, next) {
 //response is the response given to the user
 app.get("/", async (req, res) => {
   const allAnimals = await db.collection("animals").find().toArray();
-  res.render("home", {allAnimals})
+  const generatedHTML = ReactDOMServer.renderToString(
+    <div className="container">
+      <p><a href="/admin">Login/ manage the animal listing.</a></p>
+      {!allAnimals.length && <p>There are no animals yet, the admin needs to add a few.</p>}
+      <div className="animal-grid mb-3">
+        {allAnimals.map(animal => <AnimalCard key={animal._id} name={animal.name} species={animal.species} photo={animal.photo} id={animal._id} readOnly={true}/>)}
+      </div>
+    </div>
+  )
+  res.render("home", {generatedHTML})
 });
 
 //use middleware for all routes after the homepage
@@ -54,11 +73,47 @@ app.get("/api/animals", async (req, res) =>{
 })
 
 app.post("/create-animal", upload.single("photo"), ourCleanup, async (req, res) => {
+  if(req.file){ //req.file coming from multer package
+    const photofilename = `${Date.now()}.jpg` //rename file 
+    await sharp(req.file.buffer).resize(844, 456).jpeg({quality: 60}).toFile(path.join("public", "uploaded-photos", photofilename)) //resize file
+    req.cleanData.photo = photofilename
+  }
+  
   console.log(req.body)
   const info = await db.collection("animals").insertOne(req.cleanData) //info of the inserted document by user
   const newAnimal = await db.collection("animals").findOne({_id: new ObjectId(info.insertedId)}) //search the collection using the info id created by the inserted document
   res.send(newAnimal)
 })
+
+app.delete("/animal/:id", async(req, res)=>{
+  if(typeof req.params.id != "string") req.params.id = ""
+  const doc = await db.collection("animals").findOne({_id: new ObjectId(req.params.id)})
+  if(doc.photo){
+    fse.remove(path.join("public", "uploaded-phots", doc.photo))
+  }
+  db.collection("animals").deleteOne({_id: new ObjectId(req.params.id)})
+  res.send("Good Job")
+})
+
+app.post("/update-animal", upload.single("photo"), ourCleanup, async(req, res)=>{
+  if(req.file){
+    //if they are uploading a new photo
+    const photofilename = `${Date.now()}.jpg` //rename file 
+    await sharp(req.file.buffer).resize(844, 456).jpeg({quality: 60}).toFile(path.join("public", "uploaded-photos", photofilename)) //resize file
+    req.cleanData.photo = photofilename
+
+    const info = await db.collection("animals").findOneAndUpdate({_id: new ObjectId(req.body._id)},{$set: req.cleanData})
+    if(info.value.photo){
+      fse.remove(path.join("public", "uploaded-photos", info.value.photo))
+    }
+    res.send(photofilename)
+  }else{
+    //if they are not uploading a new photo
+    db.collection("animals").findOneAndUpdate({_id: new ObjectId(req.body._id)},{$set: req.cleanData})
+    res.send(false)
+  }
+})
+
 
 //Cleans up user input and data before uploading to our database
 //we only want simple strings rather than objects/html
